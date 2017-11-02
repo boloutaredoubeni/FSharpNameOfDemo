@@ -1,0 +1,25 @@
+type project
+title
+    FSharpNameOfDemo
+owners
+    Boloutare Doubeni
+authors 
+    Boloutare Doubeni
+projectUrl
+    https://github.com/boloutaredoubeni/FSharpNameOfDemo/boloutaredoubeni/FSharpNameOfDemo
+iconUrl
+    https://raw.githubusercontent.com/boloutaredoubeni/FSharpNameOfDemo/master/docs/files/img/logo.png
+licenseUrl
+    https://github.com/boloutaredoubeni/FSharpNameOfDemo/boloutaredoubeni/FSharpNameOfDemo/blob/master/LICENSE.txt
+requireLicenseAcceptance
+    false
+copyright
+    Copyright 2015
+tags
+    fsharp f# .net dotnet compiler clr nameof
+summary
+    F# nameof prototype
+description
+    Example prototype for the nameof operator
+
+
