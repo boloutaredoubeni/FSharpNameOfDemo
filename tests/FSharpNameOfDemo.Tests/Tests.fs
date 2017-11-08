@@ -11,4 +11,4 @@ let ``hello returns 42`` () =
 
 [<Test>]
 let ``has nameof`` () =
-  Assert.AreEqual(nameof "", "hello")
+  Assert.AreNotEqual(nameof "", "hello")
