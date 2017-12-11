@@ -16,49 +16,55 @@ module Async =
     }
   let deferred t = async { return t }
 
-[<AutoOpen>]
+module Option =
+
+  module Operators =
+    let (>>=) option f = Option.bind f option
+
+  open Operators
+  let traverse traverser options =
+    let folder head tail =
+      (traverser head) >>= (fun h ->
+      tail >>= (fun t ->
+      Some (h :: t)))
+    List.foldBack folder options (Some [])
+
+  let sequence (options: list<option<_>>) = traverse id options
+  
+
 module Result =
-    let bind f =
-      function
-      | Result.Ok t' -> f t'
-      | Error error -> Error error
 
-    let combine result1 result2 joinOk joinError =
-      match result1, result2 with
-      | Result.Ok ok1, Result.Ok ok2 -> Result.Ok (joinOk ok1 ok2)
-      | Error err1, Error err2 -> Error (joinError err1 err2)
-      | Error err, _ | _, Error err -> Error (joinError err err)
+  let combine result1 result2 joinOk joinError =
+    match result1, result2 with
+    | Result.Ok ok1, Result.Ok ok2 -> Result.Ok (joinOk ok1 ok2)
+    | Error err1, Error err2 -> Error (joinError err1 err2)
+    | Error err, _ | _, Error err -> Error (joinError err err)
 
-    module Operators =
-      let (>>=) f result = Result.bind result f
-    
-    open Operators
+  module Operators =
+    let (>>=) result f = Result.bind f result
+  
+  open Operators
 
-    type ResultBuilder () =
-      member __.Bind (result, f) = result >>= f
-      member __.Return ok = Result.Ok ok
-      member __.ReturnFrom result = result
+  type ResultBuilder () =
+    member __.Bind (result, f) = result >>= f
+    member __.Return ok = Result.Ok ok
+    member __.ReturnFrom result = result
 
-    let resultOf = ResultBuilder ()
+  let resultOf = ResultBuilder ()
 
-    let isOk = 
-      function
-      | Result.Ok _ -> true
-      | _ -> false
+  let isOk = 
+    function
+    | Result.Ok _ -> true
+    | _ -> false
 
-    let isError result = (not << isOk) result
+  let isError result = (not << isOk) result
 
-
-    open Operators
-
-    let traverse (traverser: 'a -> Result<'a, _>) (results: 'a list) =
-      let return' = Result.Ok
-      let init = return' []
-      let folder head tail =
-        (traverser head) >>= (fun h ->
-        tail >>= (fun t ->
-        return' (h :: t)))
-      List.foldBack folder results init
+  let traverse (traverser: 'a -> Result<'a, _>) (results: 'a list) =
+    let folder head tail =
+      (traverser head) >>= (fun h ->
+      tail >>= (fun t ->
+      Result.Ok (h :: t)))
+    List.foldBack folder results (Result.Ok [])
 module AsyncResult =
   let bind f asyncResult =
     async {
@@ -149,6 +155,15 @@ module Nameof =
         function
         | SynExpr.ArrayOrList (isList, _, range) -> SynExpr.ArrayOrList (isList, exprs, range)
         | synExpr -> synExpr)
+    
+    static member record =
+      (function
+      | SynExpr.Record (recordFields=recordFields) ->
+        recordFields 
+        |> Seq.map (fun (_, maybeSynExpr, _) -> maybeSynExpr)
+        |> Seq.toList
+        |> Option.sequence) //,
+      // (fun exprs ->)
   
   [<RequireQualifiedAccess>]
   module SynExpr =
@@ -165,7 +180,7 @@ module Nameof =
     let (|ArrayOrListSynExpr|_|) = Optic.get SynExpr.arrayOrList
 
     let rec mapNameOf synExpr : Result<SynExpr, NameOfError> =
-      resultOf {
+      Result.resultOf {
         match synExpr with
         | ParenSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.paren synExpr'
         | QuoteSynExpr (operator, quoted) ->
@@ -176,6 +191,7 @@ module Nameof =
         | StructTupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.structTuple synExprs
         | ArrayOrListSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.arrayOrList synExprs
         | TypedSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.typed synExpr'
+        // TODO: add other cases
         | synExpr -> return synExpr
       }
     and applyNameOf synExpr (prism: Prism<SynExpr, SynExpr>) synExpr' = 
@@ -186,14 +202,14 @@ module Nameof =
     and mapNameOfQuote (operator, quoted) = 
         let operator = mapNameOf operator
         let quoted = mapNameOf quoted
-        combine 
+        Result.combine 
           operator 
           quoted
           (fun op q -> (op, q))
           (fun e _ -> e)
     and traverseWithNameOf synExpr (prism: Prism<SynExpr, list<SynExpr>>) exprs = 
-      resultOf {
-        let! exprs = traverse mapNameOf exprs
+      Result.resultOf {
+        let! exprs = Result.traverse mapNameOf exprs
         return Optic.set prism exprs synExpr
       }
 
@@ -253,10 +269,12 @@ module Nameof =
   let private getSynModuleDecls (SynModuleOrNamespace (decls=decls)) = decls
 
   // FIXME: also add class methods
-  type LetBindingOrDoExpr =
+  type Bindings =
     private 
     | LetBinding of seq<SynBinding>
     | DoExpr of SequencePointInfoForBinding * SynExpr
+    | ClassMember
+    | InterfaceMember
 
   let private (|LetExpr|_|) =
     function
