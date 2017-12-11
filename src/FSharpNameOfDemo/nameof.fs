@@ -29,8 +29,13 @@ module Result =
       | Error err1, Error err2 -> Error (joinError err1 err2)
       | Error err, _ | _, Error err -> Error (joinError err err)
 
+    module Operators =
+      let (>>=) f result = Result.bind result f
+    
+    open Operators
+
     type ResultBuilder () =
-      member __.Bind (result, f) = bind result f
+      member __.Bind (result, f) = result >>= f
       member __.Return ok = Result.Ok ok
       member __.ReturnFrom result = result
 
@@ -42,8 +47,7 @@ module Result =
       | _ -> false
 
     let isError result = (not << isOk) result
-    module Operators =
-      let (>>=) f result = Result.bind result f
+
 
     open Operators
 
@@ -75,7 +79,11 @@ module AsyncResult =
 module Nameof =
   open AsyncResult
 
-  let private checker = FSharpChecker.Create() 
+  let private checker = FSharpChecker.Create()
+
+  let StringConst (string, range) =
+    let constString = (SynConst.String (string, range))
+    SynExpr.Const (constString, range)
 
   let [<Literal>] NAMEOF = "nameof"
 
@@ -84,12 +92,12 @@ module Nameof =
     member ident.NameOf () = 
       let name = ident.idText
       let range = ident.idRange
-      let stringConst = SynConst.String (name, range)
-      SynExpr.Const (stringConst, range)
+      StringConst (name, range)
 
   type NameOfError = FailedToParseLongId | NotAnIdentifier
 
   type SynExpr with
+    // FIXME: join all of these opticals and DRY them up
     static member paren =
       (function
       | SynExpr.Paren (expr=expr) -> Some expr
@@ -106,32 +114,76 @@ module Nameof =
         function
         | SynExpr.Quote (_, isRaw, _, isFromQueryExpression, range) -> SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range)
         | synExpr -> synExpr)
+    static member typed =
+      (function
+      | SynExpr.Typed (expr=expr) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.Typed (_, typeName, range) -> SynExpr.Typed (expr, typeName, range)
+        | synExpr -> synExpr)
+
+    static member tuple =
+      (function
+      | SynExpr.Tuple (exprs=exprs) -> Some exprs
+      | _ -> None),
+      (fun exprs ->
+        function
+        | SynExpr.Tuple (_, commaRanges, range) -> SynExpr.Tuple (exprs, commaRanges, range)
+        | synExpr -> synExpr)
+
+    static member structTuple =
+      (function
+      | SynExpr.Tuple (exprs=exprs) -> Some exprs
+      | _ -> None),
+      (fun exprs ->
+        function
+        | SynExpr.Tuple (_, commaRanges, range) -> SynExpr.Tuple (exprs, commaRanges, range)
+        | synExpr -> synExpr)
+
+    static member arrayOrList =
+      (function
+      | SynExpr.ArrayOrList (exprs=exprs) -> Some exprs
+      | _ -> None),
+      (fun exprs ->
+        function
+        | SynExpr.ArrayOrList (isList, _, range) -> SynExpr.ArrayOrList (isList, exprs, range)
+        | synExpr -> synExpr)
+  
   [<RequireQualifiedAccess>]
   module SynExpr =
     let (|ParenSynExpr|_|) = Optic.get SynExpr.paren
 
     let (|QuoteSynExpr|_|) = Optic.get SynExpr.quote
+
+    let (|TypedSynExpr|_|) = Optic.get SynExpr.typed
+
+    let (|TupleSynExpr|_|) = Optic.get SynExpr.tuple
+
+    let (|StructTupleSynExpr|_|) = Optic.get SynExpr.structTuple
+
+    let (|ArrayOrListSynExpr|_|) = Optic.get SynExpr.arrayOrList
+
     let rec mapNameOf synExpr : Result<SynExpr, NameOfError> =
       resultOf {
         match synExpr with
         | ParenSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.paren synExpr'
-        | QuoteSynExpr (operator, quoted) -> 
-          let result = mapNameOfQuote (operator, quoted)
-          if isOk result
-            then
-              let (Result.Ok (op, q)) = result
-              return (setQuoteExpr synExpr (op, q))
-            else
-              let (Result.Error err) = result
-              return! Error err
+        | QuoteSynExpr (operator, quoted) ->
+          let! ok = (operator, quoted) |> mapNameOfQuote
+          let (operator, quoted) = ok
+          return setQuoteExpr synExpr (operator, quoted)
+        | TupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.tuple synExprs
+        | StructTupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.structTuple synExprs
+        | ArrayOrListSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.arrayOrList synExprs
+        | TypedSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.typed synExpr'
+        | synExpr -> return synExpr
       }
-    and applyNameOf synExpr prism synExpr' = 
+    and applyNameOf synExpr (prism: Prism<SynExpr, SynExpr>) synExpr' = 
       synExpr'
       |> mapNameOf
       |> Result.map (Optic.set prism synExpr)
     and setQuoteExpr expr (op, q) = Optic.set SynExpr.quote (op, q) expr
-    and mapNameOfQuote (operator, quoted): Result<SynExpr * SynExpr, NameOfError> = 
-         // FIXME: why wont this work?
+    and mapNameOfQuote (operator, quoted) = 
         let operator = mapNameOf operator
         let quoted = mapNameOf quoted
         combine 
@@ -139,6 +191,11 @@ module Nameof =
           quoted
           (fun op q -> (op, q))
           (fun e _ -> e)
+    and traverseWithNameOf synExpr (prism: Prism<SynExpr, list<SynExpr>>) exprs = 
+      resultOf {
+        let! exprs = traverse mapNameOf exprs
+        return Optic.set prism exprs synExpr
+      }
 
     
     // let mapNameOf synExpr =
@@ -180,6 +237,8 @@ module Nameof =
     | (options, []) -> Result.Ok options
     | (_, errors) -> Error errors
 
+  let [<Literal>] NAMEOF_NULL = "null"
+
   let nameof = 
     function
     | SynExpr.Ident ident -> Result.Ok (ident.NameOf())
@@ -188,10 +247,12 @@ module Nameof =
       match lid with
       | [ident] | _::[ident] -> Result.Ok (ident.NameOf())
       | _ -> Error FailedToParseLongId
+    | SynExpr.Null range -> Result.Ok (StringConst (NAMEOF_NULL, range) )
     | _ -> Error NotAnIdentifier
 
   let private getSynModuleDecls (SynModuleOrNamespace (decls=decls)) = decls
 
+  // FIXME: also add class methods
   type LetBindingOrDoExpr =
     private 
     | LetBinding of seq<SynBinding>
