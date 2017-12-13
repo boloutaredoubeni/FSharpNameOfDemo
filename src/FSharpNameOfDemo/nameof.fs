@@ -59,6 +59,11 @@ module Result =
 
   let isError result = (not << isOk) result
 
+  let ofOption error =
+    function
+    | Some t -> Result.Ok t
+    | _ -> Error error
+
   let traverse (traverser: 'a -> Result<'a, _>) (results: 'a list) =
     let folder head tail =
       (traverser head) >>= (fun h ->
@@ -138,6 +143,8 @@ module Nameof =
         | SynExpr.Tuple (_, commaRanges, range) -> SynExpr.Tuple (exprs, commaRanges, range)
         | synExpr -> synExpr)
 
+    // FIXME: for each collection, order and/or field names need to be maintained
+
     static member structTuple =
       (function
       | SynExpr.Tuple (exprs=exprs) -> Some exprs
@@ -158,12 +165,31 @@ module Nameof =
     
     static member record =
       (function
-      | SynExpr.Record (recordFields=recordFields) ->
-        recordFields 
-        |> Seq.map (fun (_, maybeSynExpr, _) -> maybeSynExpr)
-        |> Seq.toList
-        |> Option.sequence) //,
-      // (fun exprs ->)
+      | SynExpr.Record (recordFields=recordFields) -> Some recordFields
+      | _ -> None),
+      (fun recordFields ->
+        function
+        | SynExpr.Record (baseInfo, copyInfo, _, range) -> SynExpr.Record (baseInfo, copyInfo, recordFields, range)
+        | synExpr -> synExpr)
+
+    static member newObject =
+      (function
+      | SynExpr.New (expr=expr) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.New (isProtected, typeName, _, range) -> SynExpr.New (isProtected, typeName, expr, range)
+        | synExpr -> synExpr)
+
+    static member objExpr =
+      (function
+      | SynExpr.ObjExpr (argOptions=argOptions; bindings=bindings; extraImpls=extraImpls) -> Some (argOptions, bindings, extraImpls)
+      | _ -> None),
+      (fun (argOptions, bindings, extraImpls) ->
+        function
+        | SynExpr.ObjExpr (objType, _, _, _, newExprRange, range) -> SynExpr.ObjExpr (objType, argOptions, bindings, extraImpls, newExprRange, range)
+        | synExpr -> synExpr)
+
   
   [<RequireQualifiedAccess>]
   module SynExpr =
@@ -179,6 +205,12 @@ module Nameof =
 
     let (|ArrayOrListSynExpr|_|) = Optic.get SynExpr.arrayOrList
 
+    let (|RecordSynExpr|_|) = Optic.get SynExpr.record
+
+    let (|NewSynExpr|_|) = Optic.get SynExpr.newObject
+
+    let (|ObjSynExpr|_|) = Optic.get SynExpr.objExpr
+
     let rec mapNameOf synExpr : Result<SynExpr, NameOfError> =
       Result.resultOf {
         match synExpr with
@@ -191,6 +223,7 @@ module Nameof =
         | StructTupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.structTuple synExprs
         | ArrayOrListSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.arrayOrList synExprs
         | TypedSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.typed synExpr'
+        | RecordSynExpr recordFields -> return! traverseRecordWithNameOf synExpr recordFields
         // TODO: add other cases
         | synExpr -> return synExpr
       }
@@ -212,6 +245,14 @@ module Nameof =
         let! exprs = Result.traverse mapNameOf exprs
         return Optic.set prism exprs synExpr
       }
+    and traverseRecordWithNameOf synExpr recordFields =
+      recordFields
+      |> Result.traverse (fun (recordFieldName, maybeSynExpr, maybeBlockSeparator) -> Result.resultOf {
+        let! synExpr = Result.ofOption NotAnIdentifier maybeSynExpr
+        let! synExpr = mapNameOf synExpr
+        return (recordFieldName, Some synExpr, maybeBlockSeparator)
+      })
+      |> Result.map (fun recordFields -> Optic.set SynExpr.record recordFields synExpr)
 
     
     // let mapNameOf synExpr =
