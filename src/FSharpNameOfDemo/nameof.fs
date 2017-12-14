@@ -9,7 +9,7 @@ open Aether
 type AsyncResult<'TSuccess, 'TFailure> = Async<Result<'TSuccess, 'TFailure>>
 
 module Async =
-  let map f async'= 
+  let map f async'=
     async {
       let! resolved = async'
       return f resolved
@@ -30,20 +30,16 @@ module Option =
     List.foldBack folder options (Some [])
 
   let sequence (options: list<option<_>>) = traverse id options
-  
+
 
 module Result =
 
-  let combine result1 result2 joinOk joinError =
-    match result1, result2 with
-    | Result.Ok ok1, Result.Ok ok2 -> Result.Ok (joinOk ok1 ok2)
-    | Error err1, Error err2 -> Error (joinError err1 err2)
-    | Error err, _ | _, Error err -> Error (joinError err err)
-
   module Operators =
     let (>>=) result f = Result.bind f result
-  
+
   open Operators
+
+  let fail = Error
 
   type ResultBuilder () =
     member __.Bind (result, f) = result >>= f
@@ -52,12 +48,12 @@ module Result =
 
   let resultOf = ResultBuilder ()
 
-  let isOk = 
+  let isOk =
     function
     | Result.Ok _ -> true
     | _ -> false
 
-  let isError result = (not << isOk) result
+  let isError = (not << isOk)
 
   let ofOption error =
     function
@@ -66,9 +62,11 @@ module Result =
 
   let traverse (traverser: 'a -> Result<'a, _>) (results: 'a list) =
     let folder head tail =
-      (traverser head) >>= (fun h ->
-      tail >>= (fun t ->
-      Result.Ok (h :: t)))
+      resultOf {
+        let! hd = traverser head
+        let! tl = tail
+        return hd :: tl
+      }
     List.foldBack folder results (Result.Ok [])
 module AsyncResult =
   let bind f asyncResult =
@@ -88,7 +86,6 @@ module AsyncResult =
 [<AutoOpen>]
 ///
 module Nameof =
-  open AsyncResult
 
   let private checker = FSharpChecker.Create()
 
@@ -98,14 +95,14 @@ module Nameof =
 
   let [<Literal>] NAMEOF = "nameof"
 
-  type Ident with 
+  type Ident with
     member ident.IsNameOfOperator () = ident.idText = NAMEOF
-    member ident.NameOf () = 
+    member ident.NameOf () =
       let name = ident.idText
       let range = ident.idRange
       StringConst (name, range)
 
-  type NameOfError = FailedToParseLongId | NotAnIdentifier
+  type NameOfError = FailedToParseLongId | NotAnIdentifier | NotImplemented
 
   type SynExpr with
     // FIXME: join all of these opticals and DRY them up
@@ -121,7 +118,7 @@ module Nameof =
       (function
       | SynExpr.Quote (operator=operator; quotedSynExpr=quotedSynExpr) -> Some (operator, quotedSynExpr)
       | _ -> None),
-      (fun (operator, quotedSynExpr) -> 
+      (fun (operator, quotedSynExpr) ->
         function
         | SynExpr.Quote (_, isRaw, _, isFromQueryExpression, range) -> SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range)
         | synExpr -> synExpr)
@@ -162,7 +159,7 @@ module Nameof =
         function
         | SynExpr.ArrayOrList (isList, _, range) -> SynExpr.ArrayOrList (isList, exprs, range)
         | synExpr -> synExpr)
-    
+
     static member record =
       (function
       | SynExpr.Record (recordFields=recordFields) -> Some recordFields
@@ -172,7 +169,7 @@ module Nameof =
         | SynExpr.Record (baseInfo, copyInfo, _, range) -> SynExpr.Record (baseInfo, copyInfo, recordFields, range)
         | synExpr -> synExpr)
 
-    static member newObject =
+    static member new' =
       (function
       | SynExpr.New (expr=expr) -> Some expr
       | _ -> None),
@@ -190,7 +187,52 @@ module Nameof =
         | SynExpr.ObjExpr (objType, _, _, _, newExprRange, range) -> SynExpr.ObjExpr (objType, argOptions, bindings, extraImpls, newExprRange, range)
         | synExpr -> synExpr)
 
-  
+    static member while' =
+      (function
+      | SynExpr.While (whileExpr=whileExpr; doExpr=doExpr) -> Some (whileExpr, doExpr)
+      | _ -> None),
+      (fun (whileExpr, doExpr) ->
+        function
+        | SynExpr.While (seqPoint, _, _, range) -> SynExpr.While (seqPoint, whileExpr, doExpr, range)
+        | synExpr -> synExpr)
+
+    static member for' =
+      (function
+      | SynExpr.For (identBody=identBody; toBody=toBody; doBody=doBody) -> Some (identBody, toBody, doBody)
+      | _ -> None),
+      (fun (identBody, toBody, doBody) ->
+        function
+        | SynExpr.For (forSeqPoint, ident, _, (* isDownTo: ? *) bool', _, _, range) -> SynExpr.For (forSeqPoint, ident, identBody, bool', toBody, doBody, range)
+        | synExpr -> synExpr)
+
+
+    static member forEach =
+      (function
+      | SynExpr.ForEach (seqExprOnly=seqExprOnly; pat=pat; enumExpr=enumExpr; bodyExpr=bodyExpr) -> Some (seqExprOnly, pat, enumExpr, bodyExpr)
+      | _ -> None),
+      (fun (seqExprOnly, pat, enumExpr, bodyExpr) ->
+        function
+        | SynExpr.ForEach (forSeqPoint, _, isFromSource, _, _, _, range) -> SynExpr.ForEach (forSeqPoint, seqExprOnly, isFromSource, pat, enumExpr, bodyExpr, range)
+        | synExpr -> synExpr)
+
+    static member arrayOrListofSeq =
+      (function
+      | SynExpr.ArrayOrListOfSeqExpr (_, expr, range) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.ArrayOrListOfSeqExpr (isArray, _, range) -> SynExpr.ArrayOrListOfSeqExpr (isArray, expr, range)
+        | synExpr -> synExpr)
+
+    static member computation =
+      (function
+      | SynExpr.CompExpr (expr=expr) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, _, range) -> SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, expr, range)
+        | synExpr -> synExpr)
+
   [<RequireQualifiedAccess>]
   module SynExpr =
     let (|ParenSynExpr|_|) = Optic.get SynExpr.paren
@@ -207,40 +249,71 @@ module Nameof =
 
     let (|RecordSynExpr|_|) = Optic.get SynExpr.record
 
-    let (|NewSynExpr|_|) = Optic.get SynExpr.newObject
+    let (|NewSynExpr|_|) = Optic.get SynExpr.new'
 
     let (|ObjSynExpr|_|) = Optic.get SynExpr.objExpr
+
+    let (|WhileSynExpr|_|) = Optic.get SynExpr.while'
+
+    let (|ForSynExpr|_|) = Optic.get SynExpr.for'
+
+    let (|ForEachSynExpr|_|) = Optic.get SynExpr.forEach
+
+    let (|ArrayOrListOfSeqSynExpr|_|) =  Optic.get SynExpr.arrayOrListofSeq
+
+    let (|CompSynExpr|_|) = Optic.get SynExpr.computation
 
     let rec mapNameOf synExpr : Result<SynExpr, NameOfError> =
       Result.resultOf {
         match synExpr with
         | ParenSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.paren synExpr'
         | QuoteSynExpr (operator, quoted) ->
-          let! ok = (operator, quoted) |> mapNameOfQuote
-          let (operator, quoted) = ok
+          let! (operator, quoted) = zipWithNameOf (operator, quoted)
           return setQuoteExpr synExpr (operator, quoted)
         | TupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.tuple synExprs
         | StructTupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.structTuple synExprs
         | ArrayOrListSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.arrayOrList synExprs
         | TypedSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.typed synExpr'
         | RecordSynExpr recordFields -> return! traverseRecordWithNameOf synExpr recordFields
+        | WhileSynExpr (whileExpr, doExpr) ->
+          let! (whileExpr, doExpr) = zipWithNameOf (whileExpr, doExpr)
+          return setWhileExpr synExpr (whileExpr, doExpr)
+        | ForSynExpr (identBody, toBody, doBody) ->
+          let! (identBody, toBody, doBody) = zip3WithNameOf (identBody, toBody, doBody)
+          return setForExpr synExpr (identBody, toBody, doBody)
+        // FIXME: parse SeqExprOnly in SynExpr.ForEach
+        | ForEachSynExpr (seqExprOnly, pat, enumExpr, bodyExpr) ->
+          let! (enumExpr, bodyExpr) = zipWithNameOf (enumExpr, bodyExpr)
+          return setForEachExpr synExpr (seqExprOnly, pat, enumExpr, bodyExpr)
+        // FIXME: add object expression
+        | ObjSynExpr _ -> return! Result.fail NotImplemented
+        | ArrayOrListOfSeqSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.arrayOrListofSeq synExpr'
         // TODO: add other cases
-        | synExpr -> return synExpr
+        | CompSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.computation synExpr'
+        | _ -> return! Result.fail NotImplemented
       }
-    and applyNameOf synExpr (prism: Prism<SynExpr, SynExpr>) synExpr' = 
+    and applyNameOf synExpr (prism: Prism<_, _>) synExpr' =
       synExpr'
       |> mapNameOf
       |> Result.map (Optic.set prism synExpr)
+    and setWhileExpr expr (whileExpr, doExpr) = Optic.set SynExpr.while' (whileExpr, doExpr) expr
     and setQuoteExpr expr (op, q) = Optic.set SynExpr.quote (op, q) expr
-    and mapNameOfQuote (operator, quoted) = 
-        let operator = mapNameOf operator
-        let quoted = mapNameOf quoted
-        Result.combine 
-          operator 
-          quoted
-          (fun op q -> (op, q))
-          (fun e _ -> e)
-    and traverseWithNameOf synExpr (prism: Prism<SynExpr, list<SynExpr>>) exprs = 
+    and setForExpr expr (i, t, d) = Optic.set SynExpr.for' (i, t, d) expr
+    and setForEachExpr expr (s, p, e, b) = Optic.set SynExpr.forEach (s, p, e, b) expr
+    and zipWithNameOf (expr', expr'') =
+      Result.resultOf {
+        let! expr' = mapNameOf expr'
+        let! expr'' = mapNameOf expr''
+        return (expr', expr'')
+      }
+    and zip3WithNameOf (expr', expr'', expr''') =
+      Result.resultOf {
+        let! expr' = mapNameOf expr'
+        let! expr'' = mapNameOf expr''
+        let! expr''' = mapNameOf expr'''
+        return (expr', expr'', expr''')
+      }
+    and traverseWithNameOf synExpr (prism: Prism<SynExpr, list<SynExpr>>) exprs =
       Result.resultOf {
         let! exprs = Result.traverse mapNameOf exprs
         return Optic.set prism exprs synExpr
@@ -254,11 +327,10 @@ module Nameof =
       })
       |> Result.map (fun recordFields -> Optic.set SynExpr.record recordFields synExpr)
 
-    
     // let mapNameOf synExpr =
     //   resultOf {
     //     match synExpr with
-    //     | SynExpr.Paren (expr, l, r, range) -> 
+    //     | SynExpr.Paren (expr, l, r, range) ->
     //   }
 
   // FIXME: amke me into recursivelet functions
@@ -267,39 +339,40 @@ module Nameof =
     // member synExpr.MapNameOf () =
         // Result.resultOf {
         //     match synExpr with
-        //     | SynExpr.Paren (expr, l, r, range) -> 
+        //     | SynExpr.Paren (expr, l, r, range) ->
         //         return! SynExpr.ReconstructWithNameOf (fun expr -> SynExpr.Paren (expr, l, r, range)) expr
-        //     | SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range) -> 
+        //     | SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range) ->
         //         let! operator = operator.MapNameOf ()
         //         let! quotedSynExpr = quotedSynExpr .MapNameOf ()
         //         return! SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range)
         //     | SynExpr.Typed (expr=expr) -> return! mapNameof expr
-        //     | SynExpr.Tuple (exprs, commaRanges, range) -> 
+        //     | SynExpr.Tuple (exprs, commaRanges, range) ->
         //         return! mapToCollection (fun exprs -> SynExpr.Tuple (exprs, commaRanges, range)) exprs
-        //     | SynExpr.StructTuple (exprs, commaRanges, range) -> 
+        //     | SynExpr.StructTuple (exprs, commaRanges, range) ->
         //         return! mapToCollection (fun exprs -> SynExpr.StructTuple (exprs, commaRanges, range)) exprs
-        //     | SynExpr.ArrayOrList (isList, exprs, range) -> 
+        //     | SynExpr.ArrayOrList (isList, exprs, range) ->
         //         return! mapToCollection (fun exprs -> SynExpr.ArrayOrList (isList, exprs, range)) exprs
         //     // | SynExpr.ObjExpr (
-        //     | SynExpr.App (_, false, functionExpression, argumentExpression, _) -> 
+        //     | SynExpr.App (_, false, functionExpression, argumentExpression, _) ->
         //         match functionExpression with
-        //         | SynExpr.Ident ident when ident.IsNameOfOperator() -> 
+        //         | SynExpr.Ident ident when ident.IsNameOfOperator() ->
         //         return! nameof argumentExpression
         //         | _ -> return synExpr
         //     | _ -> return synExpr
         // }
 
-  let getProjectOptionsResult = 
+  open AsyncResult
+  let getProjectOptionsResult =
     function
     | (options, []) -> Result.Ok options
     | (_, errors) -> Error errors
 
   let [<Literal>] NAMEOF_NULL = "null"
 
-  let nameof = 
+  let nameof =
     function
     | SynExpr.Ident ident -> Result.Ok (ident.NameOf())
-    | SynExpr.LongIdent (_, idents, _, _) -> 
+    | SynExpr.LongIdent (_, idents, _, _) ->
       let lid = idents.Lid
       match lid with
       | [ident] | _::[ident] -> Result.Ok (ident.NameOf())
@@ -311,7 +384,7 @@ module Nameof =
 
   // FIXME: also add class methods
   type Bindings =
-    private 
+    private
     | LetBinding of seq<SynBinding>
     | DoExpr of SequencePointInfoForBinding * SynExpr
     | ClassMember
@@ -326,11 +399,11 @@ module Nameof =
     function
     | SynModuleDecl.DoExpr (seqPointInfo, synExpr, _) -> Some (DoExpr (seqPointInfo, synExpr))
     | _ -> None
-  
+
   let private onlyLetOrDoBindings synModuleDecls =
     synModuleDecls
-    |> Seq.fold 
-      (fun bindings nextBinding -> 
+    |> Seq.fold
+      (fun bindings nextBinding ->
          match nextBinding with
          | LetExpr letBindings -> letBindings :: bindings
          | DoBindings doBindings -> doBindings :: bindings
@@ -341,10 +414,10 @@ module Nameof =
   // FIXME: The syntax is let x = f i in let y = g x in y
   let private getLet'sExpr (Binding (expr=expr)) = expr
 
-  // FIXME: map nameof operator over lett and do constructions 
+  // FIXME: map nameof operator over lett and do constructions
   let private applyToLetOrDo =
     function
-    | LetBinding synBindings -> 
+    | LetBinding synBindings ->
       synBindings
       |> Seq.map getLet'sExpr
     // | DoExpr (seqPoint, synExpr)
@@ -355,7 +428,7 @@ module Nameof =
 
   let private transformWithNameOf synModuleOrNamespaces =
     synModuleOrNamespaces
-    |> Seq.map (getSynModuleDecls >> onlyLetOrDoBindings >> transformLetOrDoBindings) 
+    |> Seq.map (getSynModuleDecls >> onlyLetOrDoBindings >> transformLetOrDoBindings)
 
   let private getProjectOptionsFromScript file input =
     asyncResultOf {
@@ -371,7 +444,7 @@ module Nameof =
     let (|ParsedTree|HasErrors|) (parseFileResults: FSharpParseFileResults) =
       if parseFileResults.ParseHadErrors
         then HasErrors (Array.toList parseFileResults.Errors)
-        else 
+        else
           match parseFileResults.ParseTree with
           | Some (ParsedInput.ImplFile (ParsedImplFileInput (modules=modules))) -> ParsedTree modules
           | _ -> HasErrors (Array.toList parseFileResults.Errors)
@@ -389,9 +462,9 @@ module Nameof =
       let! modulesOrNamespaces = parseFile file input parsingOptions
       return transformWithNameOf modulesOrNamespaces
     }
-    
+
   let runNameofOnFileAndInput (file, input) =
-    getTree(file, input) 
+    getTree(file, input)
     |> Async.RunSynchronously
 
 // TODO: Read input
