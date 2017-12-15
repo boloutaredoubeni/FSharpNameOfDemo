@@ -3,6 +3,8 @@ namespace FSharpNameOfDemo
 open Microsoft.FSharp.Compiler.SourceCodeServices
 open Microsoft.FSharp.Compiler.Ast
 
+// TODO: apply to SynExpr.App (nameof, id)
+
 open Aether
 
 ///
@@ -53,7 +55,7 @@ module Result =
     | Result.Ok _ -> true
     | _ -> false
 
-  let isError = (not << isOk)
+  let isError result = (not << isOk) result
 
   let ofOption error =
     function
@@ -95,6 +97,9 @@ module Nameof =
 
   let [<Literal>] NAMEOF = "nameof"
 
+  let [<Literal>] NAMEOF_NULL = "null"
+
+
   type Ident with
     member ident.IsNameOfOperator () = ident.idText = NAMEOF
     member ident.NameOf () =
@@ -103,6 +108,18 @@ module Nameof =
       StringConst (name, range)
 
   type NameOfError = FailedToParseLongId | NotAnIdentifier | NotImplemented
+
+  let nameof =
+    function
+    | SynExpr.Ident ident -> Result.Ok (ident.NameOf())
+    | SynExpr.LongIdent (_, idents, _, _) ->
+      let lid = idents.Lid
+      match lid with
+      | [ident] | _::[ident] -> Result.Ok (ident.NameOf())
+      | _ -> Error FailedToParseLongId
+    | SynExpr.Null range -> Result.Ok (StringConst (NAMEOF_NULL, range) )
+    | _ -> Error NotAnIdentifier
+
 
   type SynExpr with
     // FIXME: join all of these opticals and DRY them up
@@ -233,6 +250,52 @@ module Nameof =
         | SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, _, range) -> SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, expr, range)
         | synExpr -> synExpr)
 
+    static member lambda =
+      (function
+      | SynExpr.Lambda (args=args; body=body) -> Some (args, body)
+      | _ -> None),
+      (fun (args, body) ->
+        function
+        | SynExpr.Lambda (fromMethod, inLambdaSeq, _, _, range) -> SynExpr.Lambda (fromMethod, inLambdaSeq, args, body, range)
+        | synExpr -> synExpr)
+
+    static member matchLambda =
+      (function
+      | SynExpr.MatchLambda (_, _, synMatchClauses, _, _) -> Some synMatchClauses
+      | _ -> None),
+      (fun synMatchClauses ->
+        function
+        | SynExpr.MatchLambda (isExnMatch, range0, _, matchSeqPoint, range) -> SynExpr.MatchLambda (isExnMatch, range0, synMatchClauses, matchSeqPoint, range)
+        | synExpr -> synExpr)
+
+    static member match' =
+      (function
+      | SynExpr.Match (expr=expr; clauses=clauses) -> Some (expr, clauses)
+      | _ -> None),
+      (fun (expr, clauses) ->
+        function
+        | SynExpr.Match (matchSeqPoint, _, _, isExnMatch, range) -> SynExpr.Match (matchSeqPoint, expr, clauses, isExnMatch, range)
+        | synExpr -> synExpr)
+
+
+    static member do' =
+      (function
+      | SynExpr.Do (expr=expr) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.Do (range=range) -> SynExpr.Do (expr, range)
+        | synExpr -> synExpr)
+
+    static member assert' =
+      (function
+      | SynExpr.Assert (expr=expr) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.Assert (range=range) -> SynExpr.Assert (expr, range)
+        | synExpr -> synExpr)
+
   [<RequireQualifiedAccess>]
   module SynExpr =
     let (|ParenSynExpr|_|) = Optic.get SynExpr.paren
@@ -263,13 +326,23 @@ module Nameof =
 
     let (|CompSynExpr|_|) = Optic.get SynExpr.computation
 
+    let (|LambdaSynExpr|_|) = Optic.get SynExpr.lambda
+
+    let (|MatchLambdaSynExpr|_|) = Optic.get SynExpr.matchLambda
+
+    let (|MatchSynExpr|_|) = Optic.get SynExpr.match'
+
+    let (|DoSynExpr|_|) = Optic.get SynExpr.do'
+
+    let (|AssertSynExpr|_|) = Optic.get SynExpr.assert'
+
     let rec mapNameOf synExpr : Result<SynExpr, NameOfError> =
       Result.resultOf {
         match synExpr with
         | ParenSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.paren synExpr'
         | QuoteSynExpr (operator, quoted) ->
           let! (operator, quoted) = zipWithNameOf (operator, quoted)
-          return setQuoteExpr synExpr (operator, quoted)
+          return setQuoteExpr (operator, quoted) synExpr
         | TupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.tuple synExprs
         | StructTupleSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.structTuple synExprs
         | ArrayOrListSynExpr synExprs -> return! traverseWithNameOf synExpr SynExpr.arrayOrList synExprs
@@ -277,29 +350,50 @@ module Nameof =
         | RecordSynExpr recordFields -> return! traverseRecordWithNameOf synExpr recordFields
         | WhileSynExpr (whileExpr, doExpr) ->
           let! (whileExpr, doExpr) = zipWithNameOf (whileExpr, doExpr)
-          return setWhileExpr synExpr (whileExpr, doExpr)
+          return setWhileExpr (whileExpr, doExpr) synExpr
         | ForSynExpr (identBody, toBody, doBody) ->
           let! (identBody, toBody, doBody) = zip3WithNameOf (identBody, toBody, doBody)
-          return setForExpr synExpr (identBody, toBody, doBody)
+          return setForExpr (identBody, toBody, doBody)  synExpr
         // FIXME: parse SeqExprOnly in SynExpr.ForEach
         | ForEachSynExpr (seqExprOnly, pat, enumExpr, bodyExpr) ->
           let! (enumExpr, bodyExpr) = zipWithNameOf (enumExpr, bodyExpr)
-          return setForEachExpr synExpr (seqExprOnly, pat, enumExpr, bodyExpr)
+          return setForEachExpr (seqExprOnly, pat, enumExpr, bodyExpr)  synExpr
         // FIXME: add object expression
         | ObjSynExpr _ -> return! Result.fail NotImplemented
         | ArrayOrListOfSeqSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.arrayOrListofSeq synExpr'
         // TODO: add other cases
         | CompSynExpr synExpr' -> return! applyNameOf synExpr SynExpr.computation synExpr'
-        | _ -> return! Result.fail NotImplemented
+        | LambdaSynExpr (args, body) ->
+          let! body = mapNameOf body
+          return setLambdaExpr (args, body) synExpr
+        | MatchLambdaSynExpr _ -> return! Result.fail NotImplemented
+        | MatchSynExpr (expr, clauses) ->
+          let! expr = mapNameOf expr
+          return setMatchExpr (expr, clauses) synExpr
+        | DoSynExpr expr ->
+          let! expr = mapNameOf expr
+          return setDoExpr expr synExpr
+        | AssertSynExpr expr ->
+          let! expr = mapNameOf expr
+          return setAssertExpr expr synExpr
+        // Function application is where nameof binding is implemented
+        // | SynExpr.App (func )
+          // Ingoring TypeApp
+        | synExpr -> return synExpr
       }
     and applyNameOf synExpr (prism: Prism<_, _>) synExpr' =
       synExpr'
       |> mapNameOf
       |> Result.map (Optic.set prism synExpr)
-    and setWhileExpr expr (whileExpr, doExpr) = Optic.set SynExpr.while' (whileExpr, doExpr) expr
-    and setQuoteExpr expr (op, q) = Optic.set SynExpr.quote (op, q) expr
-    and setForExpr expr (i, t, d) = Optic.set SynExpr.for' (i, t, d) expr
-    and setForEachExpr expr (s, p, e, b) = Optic.set SynExpr.forEach (s, p, e, b) expr
+    and setWhileExpr = Optic.set SynExpr.while'
+    and setQuoteExpr = Optic.set SynExpr.quote
+    and setLambdaExpr = Optic.set SynExpr.lambda
+    and setMatchExpr = Optic.set SynExpr.match'
+    and setForExpr = Optic.set SynExpr.for'
+    and setForEachExpr = Optic.set SynExpr.forEach
+    and setDoExpr = Optic.set SynExpr.do'
+    and setAssertExpr = Optic.set SynExpr.assert'
+
     and zipWithNameOf (expr', expr'') =
       Result.resultOf {
         let! expr' = mapNameOf expr'
@@ -366,19 +460,6 @@ module Nameof =
     function
     | (options, []) -> Result.Ok options
     | (_, errors) -> Error errors
-
-  let [<Literal>] NAMEOF_NULL = "null"
-
-  let nameof =
-    function
-    | SynExpr.Ident ident -> Result.Ok (ident.NameOf())
-    | SynExpr.LongIdent (_, idents, _, _) ->
-      let lid = idents.Lid
-      match lid with
-      | [ident] | _::[ident] -> Result.Ok (ident.NameOf())
-      | _ -> Error FailedToParseLongId
-    | SynExpr.Null range -> Result.Ok (StringConst (NAMEOF_NULL, range) )
-    | _ -> Error NotAnIdentifier
 
   let private getSynModuleDecls (SynModuleOrNamespace (decls=decls)) = decls
 
