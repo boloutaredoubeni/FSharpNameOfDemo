@@ -6,6 +6,8 @@ open Microsoft.FSharp.Compiler.Ast
 // TODO: apply to SynExpr.App (nameof, id)
 
 open Aether
+open System.Reflection.PortableExecutable
+open System.Linq.Expressions
 
 ///
 type AsyncResult<'TSuccess, 'TFailure> = Async<Result<'TSuccess, 'TFailure>>
@@ -296,6 +298,53 @@ module Nameof =
         | SynExpr.Assert (range=range) -> SynExpr.Assert (expr, range)
         | synExpr -> synExpr)
 
+    static member app =
+      (function
+      | SynExpr.App (funcExpr=funcExpr; argExpr=argExpr) -> Some (funcExpr, argExpr)
+      | _ -> None),
+      // FIXME: this doesnot account for the case where 'nameof x = "x"'
+      (fun (funcExpr, argExpr) ->
+        function
+        | SynExpr.App (atomicFlag, isInfix, _, _, range) -> SynExpr.App (atomicFlag, isInfix, funcExpr, argExpr, range)
+        | synExpr -> synExpr)
+
+    static member letOrUse =
+      (function
+      | SynExpr.LetOrUse (bindings=bindings; body=body) -> Some (bindings, body)
+      | _ -> None),
+      (fun (let', expr) ->
+        function
+        | SynExpr.LetOrUse (isRecursive, isUse, _, _, range) -> SynExpr.LetOrUse (isRecursive, isUse, let', expr, range)
+        | synExpr -> synExpr)
+
+    static member tryWith =
+      (function
+      | SynExpr.TryWith (tryExpr=tryExpr; withCases=withCases) -> Some (tryExpr,withCases)
+      | _ -> None),
+      (fun (tryExpr, withCases) ->
+        function
+        | SynExpr.TryWith (tryRange=tryRange; withRange=withRange; range=range; trySeqPoint=trySeqPoint; withSeqPoint=withSeqPoint) ->
+          SynExpr.TryWith (tryExpr, tryRange, withCases, withRange, range, trySeqPoint, withSeqPoint)
+        | synExpr -> synExpr)
+
+    static member tryFinally =
+      (function
+      | SynExpr.TryFinally (tryExpr=tryExpr; finallyExpr=finallyExpr) -> Some (tryExpr, finallyExpr)
+      | _ -> None),
+      (fun (tryExpr, finallyExpr) ->
+        function
+        | SynExpr.TryFinally (_, _, range, trySeqPoint, finallySeqPoint) -> SynExpr.TryFinally (tryExpr, finallyExpr, range, trySeqPoint, finallySeqPoint)
+        | synExpr -> synExpr)
+
+    static member lazy' =
+      (function
+      | SynExpr.Lazy (lazyExpr, _) -> Some lazyExpr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.Lazy (range=range) -> SynExpr.Lazy (expr, range)
+        | synExpr -> synExpr)
+
   [<RequireQualifiedAccess>]
   module SynExpr =
     let (|ParenSynExpr|_|) = Optic.get SynExpr.paren
@@ -335,6 +384,20 @@ module Nameof =
     let (|DoSynExpr|_|) = Optic.get SynExpr.do'
 
     let (|AssertSynExpr|_|) = Optic.get SynExpr.assert'
+
+    /// This must be applied after appNameof
+    let (|AppSynExpr|_|) = Optic.get SynExpr.app
+
+    let (|LetOrUseExpr|_|) = Optic.get SynExpr.letOrUse
+
+    let (|TryWithSynExpr|_|) = Optic.get SynExpr.tryWith
+
+    let (|TryFinallyExpr|_|) = Optic.get SynExpr.tryFinally
+
+    let (|LazySynExpr|_|) = Optic.get SynExpr.lazy'
+
+    type SynExpr with
+      static member nameof' = ()
 
     let rec mapNameOf synExpr : Result<SynExpr, NameOfError> =
       Result.resultOf {
@@ -376,6 +439,23 @@ module Nameof =
         | AssertSynExpr expr ->
           let! expr = mapNameOf expr
           return setAssertExpr expr synExpr
+        // This must be applied after nameof
+        | AppSynExpr (funcExpr, argExpr) ->
+          let! (funcExpr, argExpr) = zipWithNameOf (funcExpr, argExpr)
+          return setAppExpr (funcExpr, argExpr) synExpr
+        | LetOrUseExpr (let', body) ->
+          // FIXME: check bindings
+          let! body = mapNameOf body
+          return setLetExpr (let', body) synExpr
+        | TryWithSynExpr (tryExpr, withCases) ->
+          let! tryExpr = mapNameOf tryExpr
+          return setTryWithExpr (tryExpr, withCases) synExpr
+        | TryFinallyExpr (tryExpr, finallyExpr) ->
+          let! (tryExpr, finallyExpr) = zipWithNameOf (tryExpr, finallyExpr)
+          return setTryFinallyExpr (tryExpr, finallyExpr) synExpr
+        | LazySynExpr lazyExpr ->
+          let! lazyExpr = mapNameOf lazyExpr
+          return setLazyExpr lazyExpr synExpr
         // Function application is where nameof binding is implemented
         // | SynExpr.App (func )
           // Ingoring TypeApp
@@ -393,7 +473,11 @@ module Nameof =
     and setForEachExpr = Optic.set SynExpr.forEach
     and setDoExpr = Optic.set SynExpr.do'
     and setAssertExpr = Optic.set SynExpr.assert'
-
+    and setLetExpr = Optic.set SynExpr.letOrUse
+    and setAppExpr = Optic.set SynExpr.app
+    and setTryWithExpr = Optic.set SynExpr.tryWith
+    and setLazyExpr = Optic.set SynExpr.lazy'
+    and setTryFinallyExpr = Optic.set SynExpr.tryFinally
     and zipWithNameOf (expr', expr'') =
       Result.resultOf {
         let! expr' = mapNameOf expr'
