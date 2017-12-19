@@ -6,8 +6,7 @@ open Microsoft.FSharp.Compiler.Ast
 // TODO: apply to SynExpr.App (nameof, id)
 
 open Aether
-open System.Reflection.PortableExecutable
-open System.Linq.Expressions
+open Nameof
 
 ///
 type AsyncResult<'TSuccess, 'TFailure> = Async<Result<'TSuccess, 'TFailure>>
@@ -70,6 +69,7 @@ module Result =
         let! hd = traverser head
         let! tl = tail
         return hd :: tl
+open Result
       }
     List.foldBack folder results (Result.Ok [])
 module AsyncResult =
@@ -109,6 +109,7 @@ module Nameof =
       let range = ident.idRange
       StringConst (name, range)
 
+  // FIXME: this should carry the range and possibly the expression
   type NameOfError = FailedToParseLongId | NotAnIdentifier | NotImplemented
 
   let nameof =
@@ -278,8 +279,6 @@ module Nameof =
         function
         | SynExpr.Match (matchSeqPoint, _, _, isExnMatch, range) -> SynExpr.Match (matchSeqPoint, expr, clauses, isExnMatch, range)
         | synExpr -> synExpr)
-
-
     static member do' =
       (function
       | SynExpr.Do (expr=expr) -> Some expr
@@ -345,6 +344,25 @@ module Nameof =
         | SynExpr.Lazy (range=range) -> SynExpr.Lazy (expr, range)
         | synExpr -> synExpr)
 
+    static member sequential =
+      (function
+      | SynExpr.Sequential (expr1=expr1; expr2=expr2) -> Some (expr1, expr2)
+      | _ -> None),
+      (fun (expr1, expr2) ->
+        function
+        | SynExpr.Sequential (seqPoint=seqPoint; isTrueSeq=isTrueSeq; range=range) -> SynExpr.Sequential (seqPoint, isTrueSeq, expr1, expr2, range)
+        | synExpr -> synExpr)
+
+    static member ifThenElse = 
+      (function
+      | SynExpr.IfThenElse (ifExpr=ifExpr; thenExpr=thenExpr; elseExpr=elseExpr) -> Some (ifExpr, thenExpr, elseExpr)
+      | _ -> None),
+      (fun (ifExpr, thenExpr, elseExpr) ->
+        function
+        | SynExpr.IfThenElse (spIfToThen=spIfToThen; isFromErrorRecovery=isFromErrorRecovery; ifToThenRange=ifToThenRange; range=range) ->
+          SynExpr.IfThenElse (ifExpr, thenExpr, elseExpr, spIfToThen, isFromErrorRecovery, ifToThenRange, range)
+        | synExpr -> synExpr)
+
   [<RequireQualifiedAccess>]
   module SynExpr =
     let (|ParenSynExpr|_|) = Optic.get SynExpr.paren
@@ -395,6 +413,10 @@ module Nameof =
     let (|TryFinallyExpr|_|) = Optic.get SynExpr.tryFinally
 
     let (|LazySynExpr|_|) = Optic.get SynExpr.lazy'
+
+    let (|SequentialSynExpr|_|) = Optic.get SynExpr.sequential
+
+    let (|IfThenElseSynExpr|_|) = Optic.get SynExpr.ifThenElse
 
     type SynExpr with
       static member nameof' = ()
@@ -456,6 +478,13 @@ module Nameof =
         | LazySynExpr lazyExpr ->
           let! lazyExpr = mapNameOf lazyExpr
           return setLazyExpr lazyExpr synExpr
+        | SequentialSynExpr (expr1, expr2) ->
+          let! (expr1, expr2) = zipWithNameOf (expr1, expr2)
+          return setSequentialExpr (expr1, expr2) synExpr
+        | IfThenElseSynExpr (ifExpr, thenExpr, elseExpr) ->
+          let! (ifExpr, thenExpr) = zipWithNameOf (ifExpr, thenExpr)
+          let! elseExpr = applyOption elseExpr
+          return Optic.set SynExpr.ifThenElse (ifExpr, thenExpr, elseExpr) synExpr
         // Function application is where nameof binding is implemented
         // | SynExpr.App (func )
           // Ingoring TypeApp
@@ -478,6 +507,7 @@ module Nameof =
     and setTryWithExpr = Optic.set SynExpr.tryWith
     and setLazyExpr = Optic.set SynExpr.lazy'
     and setTryFinallyExpr = Optic.set SynExpr.tryFinally
+    and setSequentialExpr = Optic.set SynExpr.sequential
     and zipWithNameOf (expr', expr'') =
       Result.resultOf {
         let! expr' = mapNameOf expr'
@@ -504,7 +534,16 @@ module Nameof =
         return (recordFieldName, Some synExpr, maybeBlockSeparator)
       })
       |> Result.map (fun recordFields -> Optic.set SynExpr.record recordFields synExpr)
-
+    and applyOption (maybeExpr : SynExpr option) : Result<SynExpr option, NameOfError>  =
+      Result.resultOf {
+        if Option.isNone maybeExpr
+          then return None
+          else
+            let (Some expr) = maybeExpr
+            let! expr = mapNameOf expr
+            return Some expr
+      }
+      
     // let mapNameOf synExpr =
     //   resultOf {
     //     match synExpr with
