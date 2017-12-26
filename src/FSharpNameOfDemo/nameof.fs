@@ -6,7 +6,6 @@ open Microsoft.FSharp.Compiler.Ast
 // TODO: apply to SynExpr.App (nameof, id)
 
 open Aether
-open Nameof
 
 ///
 type AsyncResult<'TSuccess, 'TFailure> = Async<Result<'TSuccess, 'TFailure>>
@@ -69,7 +68,6 @@ module Result =
         let! hd = traverser head
         let! tl = tail
         return hd :: tl
-open Result
       }
     List.foldBack folder results (Result.Ok [])
 module AsyncResult =
@@ -86,6 +84,8 @@ module AsyncResult =
     member __.Return asyncOk = async { return Result.Ok asyncOk }
 
   let asyncResultOf = AsyncResultBuilder ()
+
+
 
 [<AutoOpen>]
 ///
@@ -109,8 +109,14 @@ module Nameof =
       let range = ident.idRange
       StringConst (name, range)
 
+  let isNameOfOperator (ident: Ident) = ident .IsNameOfOperator ()
+
   // FIXME: this should carry the range and possibly the expression
-  type NameOfError = FailedToParseLongId | NotAnIdentifier | NotImplemented
+  type NameOfError =
+    | FailedToParseLongId
+    | NotAnIdentifier
+    | NotImplemented
+    | NameOfIsNotAnOperator
 
   let nameof =
     function
@@ -140,7 +146,8 @@ module Nameof =
       | _ -> None),
       (fun (operator, quotedSynExpr) ->
         function
-        | SynExpr.Quote (_, isRaw, _, isFromQueryExpression, range) -> SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range)
+        | SynExpr.Quote (_, isRaw, _, isFromQueryExpression, range) ->
+          SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range)
         | synExpr -> synExpr)
     static member typed =
       (function
@@ -153,7 +160,7 @@ module Nameof =
 
     static member tuple =
       (function
-      | SynExpr.Tuple (exprs=exprs) -> Some exprs
+      | SynExpr.Tuple (exprs=exprs) when (not << List.isEmpty) exprs -> Some exprs
       | _ -> None),
       (fun exprs ->
         function
@@ -164,7 +171,7 @@ module Nameof =
 
     static member structTuple =
       (function
-      | SynExpr.Tuple (exprs=exprs) -> Some exprs
+      | SynExpr.Tuple (exprs=exprs) when (not << List.isEmpty) exprs -> Some exprs
       | _ -> None),
       (fun exprs ->
         function
@@ -173,7 +180,7 @@ module Nameof =
 
     static member arrayOrList =
       (function
-      | SynExpr.ArrayOrList (exprs=exprs) -> Some exprs
+      | SynExpr.ArrayOrList (exprs=exprs) when (not << List.isEmpty) exprs -> Some exprs
       | _ -> None),
       (fun exprs ->
         function
@@ -182,7 +189,10 @@ module Nameof =
 
     static member record =
       (function
-      | SynExpr.Record (recordFields=recordFields) -> Some recordFields
+      | SynExpr.Record (recordFields=recordFields)
+          // this would happen anyway
+          when (not << List.isEmpty) recordFields ->
+        Some recordFields
       | _ -> None),
       (fun recordFields ->
         function
@@ -200,11 +210,13 @@ module Nameof =
 
     static member objExpr =
       (function
-      | SynExpr.ObjExpr (argOptions=argOptions; bindings=bindings; extraImpls=extraImpls) -> Some (argOptions, bindings, extraImpls)
+      | SynExpr.ObjExpr (argOptions=argOptions; bindings=bindings; extraImpls=extraImpls) ->
+        Some (argOptions, bindings, extraImpls)
       | _ -> None),
       (fun (argOptions, bindings, extraImpls) ->
         function
-        | SynExpr.ObjExpr (objType, _, _, _, newExprRange, range) -> SynExpr.ObjExpr (objType, argOptions, bindings, extraImpls, newExprRange, range)
+        | SynExpr.ObjExpr (objType, _, _, _, newExprRange, range) ->
+          SynExpr.ObjExpr (objType, argOptions, bindings, extraImpls, newExprRange, range)
         | synExpr -> synExpr)
 
     static member while' =
@@ -222,17 +234,19 @@ module Nameof =
       | _ -> None),
       (fun (identBody, toBody, doBody) ->
         function
-        | SynExpr.For (forSeqPoint, ident, _, (* isDownTo: ? *) bool', _, _, range) -> SynExpr.For (forSeqPoint, ident, identBody, bool', toBody, doBody, range)
+        | SynExpr.For (forSeqPoint, ident, _, (* isDownTo: ? *) bool', _, _, range) ->
+          SynExpr.For (forSeqPoint, ident, identBody, bool', toBody, doBody, range)
         | synExpr -> synExpr)
-
 
     static member forEach =
       (function
-      | SynExpr.ForEach (seqExprOnly=seqExprOnly; pat=pat; enumExpr=enumExpr; bodyExpr=bodyExpr) -> Some (seqExprOnly, pat, enumExpr, bodyExpr)
+      | SynExpr.ForEach (seqExprOnly=seqExprOnly; pat=pat; enumExpr=enumExpr; bodyExpr=bodyExpr) ->
+        Some (seqExprOnly, pat, enumExpr, bodyExpr)
       | _ -> None),
       (fun (seqExprOnly, pat, enumExpr, bodyExpr) ->
         function
-        | SynExpr.ForEach (forSeqPoint, _, isFromSource, _, _, _, range) -> SynExpr.ForEach (forSeqPoint, seqExprOnly, isFromSource, pat, enumExpr, bodyExpr, range)
+        | SynExpr.ForEach (forSeqPoint, _, isFromSource, _, _, _, range) ->
+          SynExpr.ForEach (forSeqPoint, seqExprOnly, isFromSource, pat, enumExpr, bodyExpr, range)
         | synExpr -> synExpr)
 
     static member arrayOrListofSeq =
@@ -250,7 +264,8 @@ module Nameof =
       | _ -> None),
       (fun expr ->
         function
-        | SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, _, range) -> SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, expr, range)
+        | SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, _, range) ->
+          SynExpr.CompExpr (isArrayOrList, isNotNakedRefCell, expr, range)
         | synExpr -> synExpr)
 
     static member lambda =
@@ -259,33 +274,42 @@ module Nameof =
       | _ -> None),
       (fun (args, body) ->
         function
-        | SynExpr.Lambda (fromMethod, inLambdaSeq, _, _, range) -> SynExpr.Lambda (fromMethod, inLambdaSeq, args, body, range)
+        | SynExpr.Lambda (fromMethod, inLambdaSeq, _, _, range) ->
+          SynExpr.Lambda (fromMethod, inLambdaSeq, args, body, range)
         | synExpr -> synExpr)
 
     static member matchLambda =
       (function
-      | SynExpr.MatchLambda (_, _, synMatchClauses, _, _) -> Some synMatchClauses
+      | SynExpr.MatchLambda (_, _, synMatchClauses, _, _)
+          when (not << List.isEmpty) synMatchClauses ->
+        Some synMatchClauses
       | _ -> None),
       (fun synMatchClauses ->
         function
-        | SynExpr.MatchLambda (isExnMatch, range0, _, matchSeqPoint, range) -> SynExpr.MatchLambda (isExnMatch, range0, synMatchClauses, matchSeqPoint, range)
+        | SynExpr.MatchLambda (isExnMatch, range0, _, matchSeqPoint, range) ->
+          SynExpr.MatchLambda (isExnMatch, range0, synMatchClauses, matchSeqPoint, range)
         | synExpr -> synExpr)
 
     static member match' =
       (function
-      | SynExpr.Match (expr=expr; clauses=clauses) -> Some (expr, clauses)
+      | SynExpr.Match (expr=expr; clauses=clauses)
+          when (not << List.isEmpty) clauses ->
+        Some (expr, clauses)
       | _ -> None),
       (fun (expr, clauses) ->
         function
-        | SynExpr.Match (matchSeqPoint, _, _, isExnMatch, range) -> SynExpr.Match (matchSeqPoint, expr, clauses, isExnMatch, range)
+        | SynExpr.Match (matchSeqPoint, _, _, isExnMatch, range) ->
+          SynExpr.Match (matchSeqPoint, expr, clauses, isExnMatch, range)
         | synExpr -> synExpr)
+
     static member do' =
       (function
-      | SynExpr.Do (expr=expr) -> Some expr
+      | SynExpr.Do (expr=expr) | SynExpr.DoBang (expr=expr) -> Some expr
       | _ -> None),
       (fun expr ->
         function
         | SynExpr.Do (range=range) -> SynExpr.Do (expr, range)
+        | SynExpr.DoBang (range=range) -> SynExpr.DoBang (expr, range)
         | synExpr -> synExpr)
 
     static member assert' =
@@ -309,7 +333,9 @@ module Nameof =
 
     static member letOrUse =
       (function
-      | SynExpr.LetOrUse (bindings=bindings; body=body) -> Some (bindings, body)
+      | SynExpr.LetOrUse (bindings=bindings; body=body)
+          when (not << List.isEmpty) bindings ->
+        Some (bindings, body)
       | _ -> None),
       (fun (let', expr) ->
         function
@@ -332,7 +358,8 @@ module Nameof =
       | _ -> None),
       (fun (tryExpr, finallyExpr) ->
         function
-        | SynExpr.TryFinally (_, _, range, trySeqPoint, finallySeqPoint) -> SynExpr.TryFinally (tryExpr, finallyExpr, range, trySeqPoint, finallySeqPoint)
+        | SynExpr.TryFinally (_, _, range, trySeqPoint, finallySeqPoint) ->
+          SynExpr.TryFinally (tryExpr, finallyExpr, range, trySeqPoint, finallySeqPoint)
         | synExpr -> synExpr)
 
     static member lazy' =
@@ -350,10 +377,11 @@ module Nameof =
       | _ -> None),
       (fun (expr1, expr2) ->
         function
-        | SynExpr.Sequential (seqPoint=seqPoint; isTrueSeq=isTrueSeq; range=range) -> SynExpr.Sequential (seqPoint, isTrueSeq, expr1, expr2, range)
+        | SynExpr.Sequential (seqPoint=seqPoint; isTrueSeq=isTrueSeq; range=range) ->
+          SynExpr.Sequential (seqPoint, isTrueSeq, expr1, expr2, range)
         | synExpr -> synExpr)
 
-    static member ifThenElse = 
+    static member ifThenElse =
       (function
       | SynExpr.IfThenElse (ifExpr=ifExpr; thenExpr=thenExpr; elseExpr=elseExpr) -> Some (ifExpr, thenExpr, elseExpr)
       | _ -> None),
@@ -361,6 +389,211 @@ module Nameof =
         function
         | SynExpr.IfThenElse (spIfToThen=spIfToThen; isFromErrorRecovery=isFromErrorRecovery; ifToThenRange=ifToThenRange; range=range) ->
           SynExpr.IfThenElse (ifExpr, thenExpr, elseExpr, spIfToThen, isFromErrorRecovery, ifToThenRange, range)
+        | synExpr -> synExpr)
+
+    static member ident =
+      (function
+      | SynExpr.Ident ident -> Some ident
+      | _ -> None),
+      (fun ident ->
+        function
+        | SynExpr.Ident _ -> SynExpr.Ident ident
+        | synExpr -> synExpr)
+
+    static member longIdent =
+      (function
+      | SynExpr.LongIdent (longDotId=(LongIdentWithDots (id=id; dotms=dotms)))
+          when (not << List.isEmpty) id ->
+        let (i::id) = id
+        Some (i::id, dotms)
+      | _ -> None),
+      (fun (longIdent, dotms) ->
+        function
+        | SynExpr.LongIdent (isOptional=isOptional; altNameRefCell=altNameRefCell; range=range) ->
+          let longIdentId = LongIdentWithDots (longIdent, dotms)
+          SynExpr.LongIdent (isOptional, longIdentId, altNameRefCell, range)
+        | synExpr -> synExpr)
+
+    static member longIdentSet =
+      (function
+      | SynExpr.LongIdentSet (longDotId=(LongIdentWithDots (id=id; dotms=dotms)); expr=expr)
+          when (not << List.isEmpty) id ->
+        let (i::id) = id
+        Some ((i::id, dotms), expr)
+      | _ -> None),
+      (fun ((id, dotms), expr) ->
+        function
+        | SynExpr.LongIdentSet (range=range) ->
+          let longIdentId = LongIdentWithDots (id, dotms)
+          SynExpr.LongIdentSet (longIdentId, expr, range)
+        | synExpr -> synExpr)
+
+    static member dotGet =
+      (function
+      | SynExpr.DotGet (expr=expr; longDotId=(LongIdentWithDots (id=id; dotms=dotms)))
+          when (not << List.isEmpty) id ->
+        let (i::id) = id
+        Some (expr, (i::id, dotms))
+      | _ -> None),
+      (fun (expr, (id, dotms)) ->
+        function
+        | SynExpr.DotGet (rangeOfDot=rangeOfDot; range=range) ->
+          let longIdentId = LongIdentWithDots (id, dotms)
+          SynExpr.DotGet (expr, rangeOfDot, longIdentId, range)
+        | synExpr -> synExpr)
+
+    static member dotSet =
+      (function
+      | SynExpr.DotSet (expr1, LongIdentWithDots (id=id; dotms=dotms), expr2, _) when (not << List.isEmpty) id ->
+        let (i::id) = id
+        Some (expr1, (i::id, dotms), expr2)
+      | _ -> None),
+      (fun (expr1, (id, dotms), expr2) ->
+        function
+        | SynExpr.DotSet (range=range) ->
+          let longIdentId = LongIdentWithDots (id, dotms)
+          SynExpr.DotSet (expr1, longIdentId, expr2, range)
+        | synExpr -> synExpr)
+
+    static member dotIndexedGet =
+      (function
+      | SynExpr.DotIndexedGet (expr, setterArgs, _, _) when (not << List.isEmpty) setterArgs -> Some (expr, setterArgs)
+      | _ -> None),
+      (fun (expr, setterArgs) ->
+        function
+        | SynExpr.DotIndexedGet (_, _, range0, range) -> SynExpr.DotIndexedGet (expr, setterArgs, range0, range)
+        | synExpr -> synExpr)
+
+    static member dotIndexedSet =
+      (function
+      | SynExpr.DotIndexedSet (objectExpr=objectExpr; indexExprs=indexExprs; valueExpr=valueExpr)
+          when (not << List.isEmpty) indexExprs ->
+        Some (objectExpr, indexExprs, valueExpr)
+      | _ -> None),
+      (fun (objectExpr, indexExpr, valueExpr) ->
+        function
+        | SynExpr.DotIndexedSet (leftOfSetRange=leftOfSetRange; dotRange=dotRange; range=range) ->
+          SynExpr.DotIndexedSet (objectExpr, indexExpr, valueExpr, leftOfSetRange, dotRange, range)
+        | synExpr -> synExpr)
+
+    static member namedIndexedPropertySet =
+      (function
+      | SynExpr.NamedIndexedPropertySet (LongIdentWithDots (id=id; dotms=dotms), expr1, expr2, _)
+          when (not << List.isEmpty) id ->
+        let (i::id) = id
+        Some ((i::id, dotms), expr1, expr2)
+      | _ -> None),
+      (fun ((id, dotms), expr1, expr2) ->
+        function
+        | SynExpr.NamedIndexedPropertySet (range=range) ->
+          let longIdentId = LongIdentWithDots (id, dotms)
+          SynExpr.NamedIndexedPropertySet (longIdentId, expr1, expr2, range)
+        | synExpr -> synExpr)
+
+    static member dotNamedIndexedPropertySet =
+      (function
+      | SynExpr.DotNamedIndexedPropertySet (expr0, LongIdentWithDots (id=id; dotms=dotms), expr1, expr2, _)
+          when (not << List.isEmpty) id ->
+        let (i::id) = id
+        Some (expr0, (i::id, dotms), expr1, expr2)
+      | _ -> None),
+      (fun (expr0, (id, dotms), expr1, expr2) ->
+        function
+        | SynExpr.DotNamedIndexedPropertySet (range=range) ->
+          let longIdentId = LongIdentWithDots (id, dotms)
+          SynExpr.DotNamedIndexedPropertySet (expr0, longIdentId, expr1, expr2, range)
+        | synExpr -> synExpr)
+
+    static member typeTest =
+      (function
+      | SynExpr.TypeTest (expr=expr; typeName=typeName) -> Some (expr, typeName)
+      | _ -> None),
+      (fun (expr, typeName) ->
+        function
+        | SynExpr.TypeTest (range=range) -> SynExpr.TypeTest (expr, typeName, range)
+        | synExpr -> synExpr)
+
+    static member upcast' =
+      (function
+      | SynExpr.Upcast (expr=expr; typeName=typeName) -> Some (expr, typeName)
+      | _ -> None),
+      (fun (expr, typeName) ->
+        function
+        | SynExpr.Upcast (range=range) -> SynExpr.Upcast (expr, typeName, range)
+        | synExpr -> synExpr)
+
+    static member downcast' =
+      (function
+      | SynExpr.Downcast (expr=expr; typeName=typeName) -> Some (expr, typeName)
+      | _ -> None),
+      (fun (expr, typeName) ->
+        function
+        | SynExpr.Downcast (range=range) -> SynExpr.Downcast (expr, typeName, range)
+        | synExpr -> synExpr)
+
+    static member inferredUpcast =
+      (function
+      | SynExpr.InferredUpcast (expr=expr) -> Some (expr)
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.InferredUpcast (range=range) -> SynExpr.InferredUpcast (expr, range)
+        | synExpr -> synExpr)
+
+    static member inferredDowncast =
+      (function
+      | SynExpr.InferredDowncast (expr=expr) -> Some (expr)
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.InferredDowncast (range=range) -> SynExpr.InferredDowncast (expr, range)
+        | synExpr -> synExpr)
+
+    static member addressOf =
+      (function
+      | SynExpr.AddressOf (_, expr, _, _) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.AddressOf (isByref, _, range0, range) -> SynExpr.AddressOf (isByref, expr, range0, range)
+        | synExpr -> synExpr)
+
+    static member joinIn =
+      (function
+      | SynExpr.JoinIn (expr1, _, expr2, _) -> Some (expr1, expr2)
+      | _ -> None),
+      (fun (expr1, expr2) ->
+        function
+        | SynExpr.JoinIn (_, range0, _, range) -> SynExpr.JoinIn (expr1, range0, expr2, range)
+        | synExpr -> synExpr)
+
+    static member yieldOrReturn =
+      (function
+      | SynExpr.YieldOrReturnFrom (expr=expr) | SynExpr.YieldOrReturn (expr=expr) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.YieldOrReturn ((b1, b2), _, range) -> SynExpr.YieldOrReturn ((b1, b2), expr, range)
+        | SynExpr.YieldOrReturnFrom ((b1, b2), _, range) -> SynExpr.YieldOrReturnFrom ((b1, b2), expr, range)
+        | synExpr -> synExpr)
+
+    static member letOrUseBang =
+      (function
+      | SynExpr.LetOrUseBang (_, _, _, pat, expr1, expr2, _) -> Some (pat, expr1,  expr2)
+      | _ -> None),
+      (fun (pat, expr1, expr2) ->
+        function
+        | SynExpr.LetOrUseBang (bindSeqPoint=bindSeqPoint; isUse=isUse; isFromSource=isFromSource; range=range) ->
+          SynExpr.LetOrUseBang (bindSeqPoint, isUse, isFromSource, pat, expr1, expr2, range)
+        | synExpr -> synExpr)
+
+    static member fixed' =
+      (function
+      | SynExpr.Fixed (expr=expr) -> Some expr
+      | _ -> None),
+      (fun expr ->
+        function
+        | SynExpr.Fixed (range=range) -> SynExpr.Fixed (expr, range)
         | synExpr -> synExpr)
 
   [<RequireQualifiedAccess>]
@@ -418,6 +651,44 @@ module Nameof =
 
     let (|IfThenElseSynExpr|_|) = Optic.get SynExpr.ifThenElse
 
+    let (|IdentSynExpr|_|) = Optic.get SynExpr.ident
+
+    let (|LongIdentSynExpr|_|) = Optic.get SynExpr.longIdent
+
+    let (|LongIdentSetSynExpr|_|) = Optic.get SynExpr.longIdentSet
+
+    let (|DotGetSynExpr|_|) = Optic.get SynExpr.dotGet
+
+    let (|DotSetSynExpr|_|) = Optic.get SynExpr.dotSet
+
+    let (|DotIndexedGetSynExpr|_|) = Optic.get SynExpr.dotIndexedGet
+
+    let (|DotIndexedSetSynExpr|_|) = Optic.get SynExpr.dotIndexedSet
+
+    let (|NamedIndexedPropSynExpr|_|) = Optic.get SynExpr.namedIndexedPropertySet
+
+    let (|DotNamedIndexedPropSynExpr|_|) = Optic.get SynExpr.dotNamedIndexedPropertySet
+
+    let (|TypeTestSynExpr|_|) = Optic.get SynExpr.typeTest
+
+    let (|UpcastSynExpr|_|) = Optic.get SynExpr.upcast'
+
+    let (|DowncastSynExpr|_|) = Optic.get SynExpr.downcast'
+
+    let (|InferredUpcastSynExpr|_|) = Optic.get SynExpr.inferredUpcast
+
+    let (|InferredDowncastSynExpr|_|) = Optic.get SynExpr.inferredDowncast
+
+    let (|AddressOfSynExpr|_|) = Optic.get SynExpr.addressOf
+
+    let (|JoinInSynExpr|_|) = Optic.get SynExpr.joinIn
+
+    let (|YieldOrReturnSynExpr|_|) = Optic.get SynExpr.yieldOrReturn
+
+    let (|LetOrUseBangSynExpr|_|) = Optic.get SynExpr.letOrUseBang
+
+    let (|FixedSynExpr|_|) = Optic.get SynExpr.fixed'
+
     type SynExpr with
       static member nameof' = ()
 
@@ -461,7 +732,7 @@ module Nameof =
         | AssertSynExpr expr ->
           let! expr = mapNameOf expr
           return setAssertExpr expr synExpr
-        // This must be applied after nameof
+        // FIXME: This must be applied after nameof
         | AppSynExpr (funcExpr, argExpr) ->
           let! (funcExpr, argExpr) = zipWithNameOf (funcExpr, argExpr)
           return setAppExpr (funcExpr, argExpr) synExpr
@@ -488,6 +759,80 @@ module Nameof =
         // Function application is where nameof binding is implemented
         // | SynExpr.App (func )
           // Ingoring TypeApp
+          //
+        | IdentSynExpr ident when ident.IsNameOfOperator () -> return! Result.fail NameOfIsNotAnOperator
+        | IdentSynExpr ident -> return Optic.set SynExpr.ident ident synExpr
+        | LongIdentSynExpr (longIdents, ranges) ->
+          if List.forall (not << isNameOfOperator) longIdents
+            then return Optic.set SynExpr.longIdent (longIdents, ranges) synExpr
+            else return! Result.fail NameOfIsNotAnOperator
+        | LongIdentSetSynExpr ((longIdents, dotms), expr) ->
+          if List.forall (not << isNameOfOperator) longIdents
+            then
+              let! expr = mapNameOf expr
+              return Optic.set SynExpr.longIdentSet ((longIdents, dotms), expr) synExpr
+            else
+              return! Result.fail NameOfIsNotAnOperator
+        | DotGetSynExpr (expr, (id, dotms)) ->
+          if List.forall (not << isNameOfOperator) id
+            then
+              let! expr = mapNameOf expr
+              return Optic.set SynExpr.dotGet (expr, (id, dotms)) synExpr
+            else
+              return! Result.fail NameOfIsNotAnOperator
+        | DotSetSynExpr (expr1, (id, dotms), expr2) ->
+          if List.forall (not << isNameOfOperator) id
+            then
+              let! (expr1, expr2) = zipWithNameOf (expr1, expr2)
+              return Optic.set SynExpr.dotSet (expr1, (id, dotms), expr2) synExpr
+            else return! Result.fail NameOfIsNotAnOperator
+        | DotIndexedGetSynExpr (expr, args) ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.dotIndexedGet (expr, args) synExpr
+        | DotIndexedSetSynExpr (objectExpr, indexExprs, valueExpr) ->
+          let! (objectExpr, valueExpr) = zipWithNameOf (objectExpr, valueExpr)
+          return Optic.set SynExpr.dotIndexedSet (objectExpr, indexExprs, valueExpr) synExpr
+        | NamedIndexedPropSynExpr ((id, dotms), expr1, expr2) ->
+          if List.forall (not << isNameOfOperator) id
+            then
+              let! (expr1, expr2) = zipWithNameOf (expr1, expr2)
+              return Optic.set SynExpr.namedIndexedPropertySet ((id, dotms), expr1, expr2) synExpr
+            else
+              return! Result.fail NameOfIsNotAnOperator
+        | DotNamedIndexedPropSynExpr (expr0, (id, dotms), expr1, expr2) ->
+          if List.forall (not << isNameOfOperator) id
+            then
+              let! (expr0, expr1, expr2) = zip3WithNameOf (expr0, expr1, expr2)
+              return Optic.set SynExpr.dotNamedIndexedPropertySet (expr0, (id, dotms), expr1, expr2) synExpr
+            else
+              return! Result.fail NameOfIsNotAnOperator
+        | TypeTestSynExpr (expr, typeName) ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.typeTest (expr, typeName) synExpr
+        | UpcastSynExpr (expr, typeName) ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.upcast' (expr, typeName) synExpr
+        | DowncastSynExpr (expr, typeName) ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.downcast' (expr, typeName) synExpr
+        | InferredDowncastSynExpr expr ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.inferredDowncast expr synExpr
+        | InferredUpcastSynExpr expr ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.inferredUpcast expr synExpr
+        | AddressOfSynExpr expr ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.addressOf expr synExpr
+        | JoinInSynExpr (expr1, expr2) ->
+          let! (expr1, expr2) = zipWithNameOf (expr1, expr2)
+          return Optic.set SynExpr.joinIn (expr1, expr2) synExpr
+        | LetOrUseBangSynExpr (pat, expr1, expr2) ->
+          let! (expr1, expr2) = zipWithNameOf (expr1, expr2)
+          return Optic.set SynExpr.letOrUseBang (pat, expr1, expr2) synExpr
+        | FixedSynExpr expr ->
+          let! expr = mapNameOf expr
+          return Optic.set SynExpr.fixed' expr synExpr
         | synExpr -> return synExpr
       }
     and applyNameOf synExpr (prism: Prism<_, _>) synExpr' =
@@ -543,7 +888,9 @@ module Nameof =
             let! expr = mapNameOf expr
             return Some expr
       }
-      
+    and applyLongIdent synExpr longIdent =
+
+
     // let mapNameOf synExpr =
     //   resultOf {
     //     match synExpr with
