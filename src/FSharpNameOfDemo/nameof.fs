@@ -888,44 +888,6 @@ module Nameof =
             let! expr = mapNameOf expr
             return Some expr
       }
-    and applyLongIdent synExpr longIdent =
-
-
-    // let mapNameOf synExpr =
-    //   resultOf {
-    //     match synExpr with
-    //     | SynExpr.Paren (expr, l, r, range) ->
-    //   }
-
-  // FIXME: amke me into recursivelet functions
-  // type SynExpr with
-    /// Only accounts for usage in Expressions, not Modules, types or namespaces, attributes, patterns etc
-    // member synExpr.MapNameOf () =
-        // Result.resultOf {
-        //     match synExpr with
-        //     | SynExpr.Paren (expr, l, r, range) ->
-        //         return! SynExpr.ReconstructWithNameOf (fun expr -> SynExpr.Paren (expr, l, r, range)) expr
-        //     | SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range) ->
-        //         let! operator = operator.MapNameOf ()
-        //         let! quotedSynExpr = quotedSynExpr .MapNameOf ()
-        //         return! SynExpr.Quote (operator, isRaw, quotedSynExpr, isFromQueryExpression, range)
-        //     | SynExpr.Typed (expr=expr) -> return! mapNameof expr
-        //     | SynExpr.Tuple (exprs, commaRanges, range) ->
-        //         return! mapToCollection (fun exprs -> SynExpr.Tuple (exprs, commaRanges, range)) exprs
-        //     | SynExpr.StructTuple (exprs, commaRanges, range) ->
-        //         return! mapToCollection (fun exprs -> SynExpr.StructTuple (exprs, commaRanges, range)) exprs
-        //     | SynExpr.ArrayOrList (isList, exprs, range) ->
-        //         return! mapToCollection (fun exprs -> SynExpr.ArrayOrList (isList, exprs, range)) exprs
-        //     // | SynExpr.ObjExpr (
-        //     | SynExpr.App (_, false, functionExpression, argumentExpression, _) ->
-        //         match functionExpression with
-        //         | SynExpr.Ident ident when ident.IsNameOfOperator() ->
-        //         return! nameof argumentExpression
-        //         | _ -> return synExpr
-        //     | _ -> return synExpr
-        // }
-
-  open AsyncResult
   let getProjectOptionsResult =
     function
     | (options, []) -> Result.Ok options
@@ -981,6 +943,7 @@ module Nameof =
     synModuleOrNamespaces
     |> Seq.map (getSynModuleDecls >> onlyLetOrDoBindings >> transformLetOrDoBindings)
 
+  open AsyncResult
   let private getProjectOptionsFromScript file input =
     asyncResultOf {
       let! results = checker.GetProjectOptionsFromScript (file, input) |> Async.map getProjectOptionsResult
@@ -1006,7 +969,7 @@ module Nameof =
       | ParsedTree modulesAndNamespaces -> return Result.Ok modulesAndNamespaces
     }
 
-  let private getTree(file, input) =
+  let private getTree (file, input) =
     asyncResultOf {
       let! projectOptions = getProjectOptionsFromScript file input
       let! parsingOptions = getParsingOptionsFromProjectOptions projectOptions |> Async.deferred
